@@ -67,6 +67,37 @@ export function useRun() {
     };
   }, [runId]);
 
+  // Open a past run (from History); polling stops at once if it has finished.
+  const show = useCallback(
+    (id: string) => {
+      if (id === runId) return; // already showing it
+      setError(null);
+      setStalled(false);
+      setRun(null);
+      setRunId(id);
+    },
+    [runId],
+  );
+
+  // Retry a failed run from the step that failed.
+  const retry = useCallback(async (id: string) => {
+    setStarting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/runs/${id}/retry`, { method: "POST" });
+      const body = (await response.json().catch(() => ({}))) as { runId?: string; error?: string };
+      if (body.runId) {
+        setRun(null);
+        setRunId(body.runId);
+      }
+      if (!response.ok) setError(body.error ?? `Could not retry the run (HTTP ${response.status}).`);
+    } catch {
+      setError("Could not reach the app server.");
+    } finally {
+      setStarting(false);
+    }
+  }, []);
+
   const clear = useCallback(() => {
     setRunId(null);
     setRun(null);
@@ -74,7 +105,7 @@ export function useRun() {
     setStalled(false);
   }, []);
 
-  return { run, error, starting, stalled, start, clear };
+  return { run, error, starting, stalled, start, show, retry, clear };
 }
 
 // What the canvas needs to know about the current run.

@@ -6,7 +6,7 @@ frontend shows it with [React Flow](https://reactflow.dev/).
 
 FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 
-> **Status:** Phases 1–3 done (setup, flow editor, execution through Inngest). Polish comes in Phase 4.
+> **Status:** all four phases done: setup, flow editor, execution through Inngest, and polish.
 
 ## The flow editor
 
@@ -24,6 +24,9 @@ FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 - **Delete:** select a node or edge and press Backspace or Delete. Start cannot be deleted.
 - **Example:** "Reset to example" restores the brief's example: "Is this a support request?"
   YES → Support, NO → Sales.
+- **JSON export/import:** "Export JSON" downloads the workflow; "Import JSON" loads one. Imports are
+  checked with the same schema and rules, and a refused file says why (for example "A node cannot
+  connect to itself").
 
 ## Running a workflow
 
@@ -45,6 +48,22 @@ model is asked once more; if that is invalid too, the step fails.
 Failures and retries: each step is retried up to 2 more times by Inngest (timeouts, connection errors,
 server errors, invalid answers). Requests that a retry cannot fix (HTTP 400/401/403/404/422, such as an
 unknown model) stop the run straight away. When a run fails, the editor shows which step failed and why.
+
+## Phase 4: polish
+
+| Feature (from the brief's list) | What it does |
+|---|---|
+| Visual execution state | The active node pulses while the model is asked; visited nodes turn green, skipped ones fade, a failed node turns red with its error. |
+| Animated active edges | The edge the run just took animates; taken edges are drawn thicker. Respects reduced-motion settings. |
+| Execution logs panel | Each decision with its time, duration, model, the raw reply if it was not exactly YES/NO, repair requests, retry attempts and errors. "Copy as JSON" copies the log. |
+| Execution history | The History tab lists past runs, newest first. Opening one shows its path and log; if the workflow has changed since, the panel says so and can restore the version that run used. |
+| Retry failed nodes | A failed run has "Retry from failed step": a new run with the same input and workflow that reuses the answers given before the failure (marked as reused, no model call) and asks the model again from the failed node on. |
+| JSON export/import | See the editor section above. |
+| Error handling | Permanent errors stop at once; temporary ones are retried by Inngest; the run panel and the node show what failed. |
+
+Reliability: the Inngest function uses `idempotency: "event.data.runId"`, so a duplicate event cannot run
+the same workflow twice, and `concurrency: { limit: 2 }`, so at most two workflows call the local model at
+once while the rest wait in the queue.
 
 Run records are JSON files in `.data/runs/` (gitignored). Set `LLM_STUB=1` to run without a model: the
 stub is not AI, it answers YES when the question and input share a keyword.
@@ -101,15 +120,17 @@ See `.env.example`. Never commit real keys; `.env.local` and other `.env*` files
 src/
 ├── app/
 │   ├── api/inngest/route.ts   # Inngest serve endpoint
-│   ├── api/runs/route.ts      # POST: start a run
+│   ├── api/runs/route.ts      # POST: start a run · GET: run history
 │   ├── api/runs/[id]/route.ts # GET: run status for the editor
+│   ├── api/runs/[id]/retry/   # POST: retry a failed run from the failed step
 │   ├── layout.tsx
 │   └── page.tsx
 ├── components/
-│   ├── flow/                  # React Flow editor, nodes, YES/NO edge, run panel and run state
+│   ├── flow/                  # editor, nodes, YES/NO edge, run panel, log, history, run state
 │   └── ui/                    # shadcn/ui components
 ├── inngest/
 │   ├── client.ts              # Inngest client
+│   ├── dispatch.ts            # sends a run to Inngest
 │   └── functions.ts           # run-workflow Inngest function
 └── lib/
     ├── decide.ts              # YES/NO prompt, answer parsing, error handling, stub

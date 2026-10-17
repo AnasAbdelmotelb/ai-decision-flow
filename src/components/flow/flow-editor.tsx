@@ -17,7 +17,7 @@ import {
   type OnConnectStart,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Flag, GitBranch, RotateCcw } from "lucide-react";
+import { Download, Flag, GitBranch, RotateCcw, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { edgeTypes } from "@/components/flow/branch-edge";
 import { nodeTypes } from "@/components/flow/nodes";
@@ -34,6 +34,8 @@ import {
   fromStored,
   makeDecisionNode,
   makeOutcomeNode,
+  parseStoredGraph,
+  structureKey,
   toStored,
   type FlowEdge,
   type FlowNode,
@@ -64,7 +66,7 @@ function Editor() {
   const [savedJson, setSavedJson] = useState<string | null>("");
   const { screenToFlowPosition, fitView } = useReactFlow<FlowNode, FlowEdge>();
   const wrapper = useRef<HTMLDivElement>(null);
-  const { run, error: runError, starting, stalled, start, clear } = useRun();
+  const { run, error: runError, starting, stalled, start, show, retry, clear } = useRun();
   // While a run is in progress the workflow can't be changed (nodes can still be moved).
   const locked = isActive(run) || starting;
 
@@ -166,6 +168,61 @@ function Editor() {
     [nodes, screenToFlowPosition],
   );
 
+  // A past run opened from History may have used a different version of the workflow.
+  const runMatchesCanvas = useMemo(
+    () => !run || structureKey(run.graph) === structureKey(toStored(graph)),
+    [run, graph],
+  );
+
+  const replaceGraph = (next: Graph) => {
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    window.requestAnimationFrame(() => fitView({ padding: 0.2 }));
+  };
+
+  const loadRunWorkflow = () => {
+    if (!run) return;
+    if (!window.confirm("Replace the current workflow with the one this run used?")) return;
+    const restored = fromStored(run.graph);
+    if (restored) replaceGraph(restored);
+  };
+
+  const exportWorkflow = () => {
+    const blob = new Blob([JSON.stringify(toStored(graph), null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "ai-decision-flow-workflow.json";
+    link.click();
+    URL.revokeObjectURL(url);
+    setNotice("Workflow exported as ai-decision-flow-workflow.json.");
+  };
+
+  const fileInput = useRef<HTMLInputElement>(null);
+  const importWorkflow = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      setNotice("Import refused: the file is larger than 1 MB.");
+      return;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(await file.text());
+    } catch {
+      setNotice("Import refused: the file is not valid JSON.");
+      return;
+    }
+    const result = parseStoredGraph(value);
+    if (!result.ok) {
+      setNotice(`Import refused: ${result.reason}`);
+      return;
+    }
+    if (!window.confirm(`Replace the current workflow with "${file.name}"?`)) return;
+    clear();
+    replaceGraph(result.graph);
+    setNotice(`Imported ${file.name}.`);
+  };
+
   const runWorkflow = (input: string) => {
     setNotice(null);
     void start(toStored(graph), input);
@@ -183,11 +240,8 @@ function Editor() {
   const resetToExample = () => {
     if (!window.confirm("Replace the current workflow with the example? This cannot be undone.")) return;
     clear();
-    const example = exampleGraph();
-    setNodes(example.nodes);
-    setEdges(example.edges);
+    replaceGraph(exampleGraph());
     setNotice("Workflow reset to the example.");
-    window.requestAnimationFrame(() => fitView({ padding: 0.2 }));
   };
 
   return (
@@ -224,8 +278,25 @@ function Editor() {
                 <Flag data-icon="inline-start" /> Add outcome
               </Button>
               <Button size="sm" variant="ghost" disabled={locked} onClick={resetToExample}>
-                <RotateCcw data-icon="inline-start" /> Reset to example
+                <RotateCcw data-icon="inline-start" /> <span className="max-sm:sr-only">Reset to example</span>
               </Button>
+              <Button size="sm" variant="ghost" onClick={exportWorkflow}>
+                <Download data-icon="inline-start" /> <span className="max-sm:sr-only">Export JSON</span>
+              </Button>
+              <Button size="sm" variant="ghost" disabled={locked} onClick={() => fileInput.current?.click()}>
+                <Upload data-icon="inline-start" /> <span className="max-sm:sr-only">Import JSON</span>
+              </Button>
+              <input
+                ref={fileInput}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                aria-label="Import a workflow JSON file"
+                onChange={(event) => {
+                  void importWorkflow(event.target.files?.[0]);
+                  event.target.value = ""; // allow importing the same file again
+                }}
+              />
             </Panel>
 
             <Panel position="bottom-center" className="w-[min(32rem,calc(100vw-2rem))]">
@@ -268,6 +339,10 @@ function Editor() {
           locked={locked}
           onRun={runWorkflow}
           onClear={clear}
+          onShow={show}
+          onRetry={retry}
+          runMatchesCanvas={runMatchesCanvas}
+          onLoadRunWorkflow={loadRunWorkflow}
         />
       </div>
     </RunContext.Provider>

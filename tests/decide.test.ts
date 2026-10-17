@@ -46,7 +46,12 @@ function fakeClient(...replies: Array<string | Error>) {
 describe("decideWithLlm", () => {
   it("returns the answer from a valid first reply", async () => {
     const { client, create } = fakeClient("YES");
-    await expect(decideWithLlm(client, "m", "q?", "in")).resolves.toEqual({ answer: "YES", raw: "YES", calls: 1, model: "m" });
+    await expect(decideWithLlm(client, "m", "q?", "in")).resolves.toEqual({
+      answer: "YES",
+      raw: "YES",
+      calls: 1,
+      model: "m",
+    });
     expect(create).toHaveBeenCalledTimes(1);
     expect(create.mock.calls[0]).toMatchObject([{ model: "m", temperature: 0, max_tokens: 5 }]);
   });

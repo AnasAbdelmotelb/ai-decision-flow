@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decideWithStub, type Decide } from "@/lib/decide";
 import { executeWorkflow, InvalidWorkflowError, type StepRunner } from "@/lib/execute";
 import { connect, exampleGraph, makeDecisionNode, makeOutcomeNode, toStored, type Graph } from "@/lib/graph";
-import { RunStore } from "@/lib/runs";
+import { RunStore, reusableAnswers } from "@/lib/runs";
 
 // Behaves like Inngest's step.run: a completed step's result is memoised and its code is not re-run.
 function memoStep(): StepRunner & { ids: string[] } {
@@ -28,7 +28,11 @@ const stub: Decide = async (question, input) => decideWithStub(question, input);
 // Start → "Support request?" —YES→ "Is it urgent?" —YES→ Urgent / —NO→ Support queue; —NO→ Sales
 function twoLevelGraph(): Graph {
   const graph = exampleGraph();
-  const urgent = { ...makeDecisionNode({ x: 0, y: 0 }), id: "decision-urgent", data: { label: "Urgent?", prompt: "Is the customer blocked and is it urgent?" } };
+  const urgent = {
+    ...makeDecisionNode({ x: 0, y: 0 }),
+    id: "decision-urgent",
+    data: { label: "Urgent?", prompt: "Is the customer blocked and is it urgent?" },
+  };
   const urgentOutcome = { ...makeOutcomeNode({ x: 0, y: 0 }), id: "outcome-urgent", data: { label: "Urgent support" } };
   let next: Graph = { nodes: [...graph.nodes, urgent, urgentOutcome], edges: graph.edges };
   next = { ...next, edges: connect(next, "decision-support", "yes", "decision-urgent") };
@@ -106,7 +110,9 @@ describe("executeWorkflow", () => {
 
     await expect(executeWorkflow({ ...base, decide: failing })).rejects.toThrow("LLM request timed out.");
     let saved = (await store.get(record.id))!;
-    expect(saved.steps).toMatchObject([{ nodeId: "decision-support", status: "failed", error: "LLM request timed out.", attempt: 1 }]);
+    expect(saved.steps).toMatchObject([
+      { nodeId: "decision-support", status: "failed", error: "LLM request timed out.", attempt: 1 },
+    ]);
     expect(saved.status).toBe("running");
 
     await executeWorkflow({ ...base, decide: stub, attempt: 1 });
@@ -142,5 +148,59 @@ describe("RunStore", () => {
 
   it("returns null for an unknown run", async () => {
     expect(await store.get(crypto.randomUUID())).toBeNull();
+  });
+});
+
+describe("retry from the failed step", () => {
+  it("reuses earlier answers and asks the model again only from the failed node", async () => {
+    const graph = toStored(twoLevelGraph());
+    const input = "I need support urgently, the customer is blocked";
+
+    // First run: the second decision fails on every attempt.
+    const failingSecond: Decide = async (question, text) => {
+      if (question.includes("urgent")) throw new Error("LLM request timed out.");
+      return decideWithStub(question, text);
+    };
+    const first = await store.create(input, graph);
+    await expect(
+      executeWorkflow({ runId: first.id, graph, input, step: memoStep(), decide: failingSecond, store }),
+    ).rejects.toThrow("LLM request timed out.");
+    await store.update(first.id, (r) => void (r.status = "failed"));
+    const failed = (await store.get(first.id))!;
+
+    // Retry: a new run that reuses the first decision's answer.
+    const reuse = reusableAnswers(failed);
+    expect(Object.keys(reuse)).toEqual(["decision-support"]);
+    const decide = vi.fn(stub);
+    const retry = await store.create(input, graph, failed.id);
+    const result = await executeWorkflow({ runId: retry.id, graph, input, step: memoStep(), decide, store, reuse });
+
+    expect(result.outcomeLabel).toBe("Urgent support");
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(decide.mock.calls[0][0]).toContain("urgent");
+    const saved = (await store.get(retry.id))!;
+    expect(saved.retryOf).toBe(failed.id);
+    expect(saved.steps.map((s) => [s.nodeId, s.answer, s.reused ?? false])).toEqual([
+      ["decision-support", "YES", true],
+      ["decision-urgent", "YES", false],
+    ]);
+  });
+});
+
+describe("RunStore.list", () => {
+  it("lists runs newest first with a short summary and skips unreadable files", async () => {
+    const older = await store.create("first input", toStored(exampleGraph()));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = await store.create("x".repeat(300), toStored(exampleGraph()), older.id);
+    await writeFile(path.join(dir, `${crypto.randomUUID()}.json`), "{ not json");
+
+    const list = await store.list();
+    expect(list.map((r) => r.id)).toEqual([newer.id, older.id]);
+    expect(list[0]).toMatchObject({ status: "queued", retryOf: older.id, decisions: 0 });
+    expect(list[0].input).toHaveLength(120);
+  });
+
+  it("returns an empty list before any run exists", async () => {
+    expect(await new RunStore(path.join(dir, "missing")).list()).toEqual([]);
   });
 });

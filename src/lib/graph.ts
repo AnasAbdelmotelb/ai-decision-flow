@@ -224,7 +224,9 @@ export type StoredGraph = z.infer<typeof StoredGraph>;
 export function toStored(graph: Graph): StoredGraph {
   return {
     version: 1,
-    nodes: graph.nodes.map(({ id, type, position, data }) => ({ id, type, position, data }) as StoredGraph["nodes"][number]),
+    nodes: graph.nodes.map(
+      ({ id, type, position, data }) => ({ id, type, position, data }) as StoredGraph["nodes"][number],
+    ),
     edges: graph.edges.map((edge) => ({
       source: edge.source,
       target: edge.target,
@@ -233,14 +235,22 @@ export function toStored(graph: Graph): StoredGraph {
   };
 }
 
-// Rebuilds a graph from stored JSON, rejecting anything that does not match the schema
-// or breaks the connection rules. Returns null when the data cannot be used.
-export function fromStored(value: unknown): Graph | null {
+export type ParseResult = { ok: true; graph: Graph } | { ok: false; reason: string };
+
+// Rebuilds a graph from stored or imported JSON, rejecting anything that does not match the schema
+// or breaks the connection rules, with the reason.
+export function parseStoredGraph(value: unknown): ParseResult {
   const parsed = StoredGraph.safeParse(value);
-  if (!parsed.success) return null;
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.length ? ` at ${issue.path.join(".")}` : "";
+    return { ok: false, reason: `Not a workflow file (version 1)${where}: ${issue?.message ?? "invalid data"}.` };
+  }
   const ids = parsed.data.nodes.map((node) => node.id);
-  if (new Set(ids).size !== ids.length) return null;
-  if (parsed.data.nodes.filter((node) => node.type === "start").length !== 1) return null;
+  if (new Set(ids).size !== ids.length) return { ok: false, reason: "Two nodes share the same id." };
+  if (parsed.data.nodes.filter((node) => node.type === "start").length !== 1) {
+    return { ok: false, reason: "The workflow must have exactly one Start node." };
+  }
 
   const nodes: FlowNode[] = parsed.data.nodes.map((node) =>
     node.type === "start" ? { ...node, deletable: false } : node,
@@ -248,8 +258,21 @@ export function fromStored(value: unknown): Graph | null {
   let graph: Graph = { nodes, edges: [] };
   for (const edge of parsed.data.edges) {
     const check = checkConnection({ source: edge.source, target: edge.target, sourceHandle: edge.branch }, graph);
-    if (!check.ok) return null;
+    if (!check.ok) return { ok: false, reason: `Connection ${edge.source} → ${edge.target}: ${check.reason}` };
     graph = { nodes, edges: connect(graph, edge.source, edge.branch, edge.target) };
   }
-  return graph;
+  return { ok: true, graph };
+}
+
+// Identifies what a run depends on (nodes, prompts, edges) and ignores layout, so moving nodes
+// doesn't count as a different workflow.
+export function structureKey(stored: StoredGraph): string {
+  const nodes = stored.nodes.map(({ id, type, data }) => ({ id, type, data })).sort((a, b) => a.id.localeCompare(b.id));
+  const edges = stored.edges.map(({ source, branch, target }) => `${source}:${branch}->${target}`).sort();
+  return JSON.stringify({ nodes, edges });
+}
+
+export function fromStored(value: unknown): Graph | null {
+  const result = parseStoredGraph(value);
+  return result.ok ? result.graph : null;
 }

@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { inngest } from "@/inngest/client";
-import { RUN_REQUESTED } from "@/inngest/functions";
+import { dispatch } from "@/inngest/dispatch";
 import { findIssues, fromStored, StoredGraph } from "@/lib/graph";
 import { runStore } from "@/lib/runs";
 
@@ -25,14 +24,10 @@ export async function POST(request: Request) {
   }
 
   const run = await runStore.create(parsed.data.input, parsed.data.graph);
-  try {
-    await inngest.send({ name: RUN_REQUESTED, data: { runId: run.id, input: run.input, graph: run.graph } });
-  } catch {
-    await runStore.update(run.id, (record) => {
-      record.status = "failed";
-      record.error = "Could not reach Inngest. Is the dev server running (npm run dev:inngest)?";
-    });
-    return Response.json({ error: "Could not reach Inngest. Is the dev server running?", runId: run.id }, { status: 503 });
-  }
-  return Response.json({ runId: run.id }, { status: 202 });
+  return dispatch(run);
+}
+
+// Past runs for the History tab, newest first.
+export async function GET() {
+  return Response.json({ runs: await runStore.list() }, { headers: { "Cache-Control": "no-store" } });
 }

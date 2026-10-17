@@ -7,6 +7,8 @@ import {
   findFreeSpot,
   findIssues,
   fromStored,
+  parseStoredGraph,
+  structureKey,
   makeDecisionNode,
   makeOutcomeNode,
   toStored,
@@ -37,8 +39,14 @@ describe("checkConnection", () => {
   const graph = withExtraNodes();
 
   it("accepts YES and NO outputs from a decision", () => {
-    expect(checkConnection({ source: "d2", sourceHandle: "yes", target: "o3" }, graph)).toEqual({ ok: true, branch: "yes" });
-    expect(checkConnection({ source: "d2", sourceHandle: "no", target: "o3" }, graph)).toEqual({ ok: true, branch: "no" });
+    expect(checkConnection({ source: "d2", sourceHandle: "yes", target: "o3" }, graph)).toEqual({
+      ok: true,
+      branch: "yes",
+    });
+    expect(checkConnection({ source: "d2", sourceHandle: "no", target: "o3" }, graph)).toEqual({
+      ok: true,
+      branch: "no",
+    });
   });
 
   it("rejects self-loops, edges into Start, unknown handles and outputs from outcomes", () => {
@@ -98,9 +106,17 @@ describe("storage round trip", () => {
     expect(fromStored(null)).toBeNull();
     expect(fromStored({ ...stored, version: 2 })).toBeNull();
     expect(fromStored({ ...stored, nodes: [...stored.nodes, stored.nodes[1]] })).toBeNull(); // duplicate id
-    expect(fromStored({ ...stored, edges: [...stored.edges, { source: "outcome-sales", target: "decision-support", branch: "yes" }] })).toBeNull();
     expect(
-      fromStored({ ...stored, edges: [...stored.edges, { source: "decision-support", target: START_ID, branch: "no" }] }),
+      fromStored({
+        ...stored,
+        edges: [...stored.edges, { source: "outcome-sales", target: "decision-support", branch: "yes" }],
+      }),
+    ).toBeNull();
+    expect(
+      fromStored({
+        ...stored,
+        edges: [...stored.edges, { source: "decision-support", target: START_ID, branch: "no" }],
+      }),
     ).toBeNull();
   });
 });
@@ -117,5 +133,38 @@ describe("findFreeSpot", () => {
     const spot = findFreeSpot({ x: 240, y: 80 }, size, nodes); // on top of the decision node
     expect(spot).not.toEqual({ x: 240, y: 80 });
     expect(findFreeSpot(spot, size, nodes)).toEqual(spot);
+  });
+});
+
+describe("parseStoredGraph (JSON import)", () => {
+  it("explains why a file is refused", () => {
+    const stored = toStored(exampleGraph());
+    const reason = (value: unknown) => {
+      const result = parseStoredGraph(value);
+      return result.ok ? null : result.reason;
+    };
+    expect(reason({ hello: "world" })).toMatch(/^Not a workflow file \(version 1\) at version:/);
+    expect(reason({ ...stored, nodes: [...stored.nodes, stored.nodes[1]] })).toBe("Two nodes share the same id.");
+    expect(reason({ ...stored, nodes: stored.nodes.filter((n) => n.type !== "start"), edges: [] })).toBe(
+      "The workflow must have exactly one Start node.",
+    );
+    expect(
+      reason({ ...stored, edges: [...stored.edges, { source: "decision-support", target: "ghost", branch: "no" }] }),
+    ).toBe("Connection decision-support → ghost: Unknown node.");
+    expect(parseStoredGraph(stored).ok).toBe(true);
+  });
+});
+
+describe("structureKey", () => {
+  it("ignores node positions but not prompts or edges", () => {
+    const stored = toStored(exampleGraph());
+    const moved = { ...stored, nodes: stored.nodes.map((n) => ({ ...n, position: { x: n.position.x + 50, y: 0 } })) };
+    expect(structureKey(moved)).toBe(structureKey(stored));
+
+    const edited = toStored(exampleGraph());
+    const decision = edited.nodes.find((n) => n.type === "decision")!;
+    if (decision.type === "decision") decision.data.prompt = "Is this a sales request?";
+    expect(structureKey(edited)).not.toBe(structureKey(stored));
+    expect(structureKey({ ...stored, edges: stored.edges.slice(0, 2) })).not.toBe(structureKey(stored));
   });
 });

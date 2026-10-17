@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Answer } from "@/lib/decide";
 import type { StoredGraph } from "@/lib/graph";
@@ -20,6 +20,7 @@ export type RunStep = {
   model?: string;
   edgeId?: string; // the edge taken because of the answer
   error?: string;
+  reused?: boolean; // answer carried over from the failed run this one retries; no model call
 };
 
 export type RunStatus = "queued" | "running" | "completed" | "failed";
@@ -37,7 +38,30 @@ export type RunRecord = {
   steps: RunStep[];
   outcome?: { nodeId: string; label: string };
   error?: string;
+  retryOf?: string; // the failed run this run retries
 };
+
+export type RunSummary = Pick<
+  RunRecord,
+  "id" | "status" | "createdAt" | "updatedAt" | "outcome" | "error" | "retryOf"
+> & {
+  input: string; // first 120 characters
+  decisions: number;
+};
+
+// An answer from an earlier run that a retry can reuse instead of asking the model again.
+export type ReusedAnswer = Required<Pick<RunStep, "answer" | "raw" | "calls" | "model">>;
+
+// Answers from the steps that completed before a run failed, keyed by node id.
+export function reusableAnswers(run: RunRecord): Record<string, ReusedAnswer> {
+  const answers: Record<string, ReusedAnswer> = {};
+  for (const step of run.steps) {
+    if (step.status === "done" && step.answer && step.raw !== undefined && step.calls && step.model) {
+      answers[step.nodeId] = { answer: step.answer, raw: step.raw, calls: step.calls, model: step.model };
+    }
+  }
+  return answers;
+}
 
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -64,7 +88,7 @@ export class RunStore {
     await rename(temp, target); // atomic: readers never see a half-written file
   }
 
-  async create(input: string, graph: StoredGraph): Promise<RunRecord> {
+  async create(input: string, graph: StoredGraph, retryOf?: string): Promise<RunRecord> {
     const now = new Date().toISOString();
     const record: RunRecord = {
       id: crypto.randomUUID(),
@@ -77,6 +101,7 @@ export class RunStore {
       visited: [],
       edgeIds: [],
       steps: [],
+      ...(retryOf ? { retryOf } : {}),
     };
     await this.write(record);
     return record;
@@ -89,6 +114,37 @@ export class RunStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     }
+  }
+
+  // Newest first. Unreadable files are skipped rather than breaking the list.
+  async list(limit = 50): Promise<RunSummary[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const ids = names
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.slice(0, -5))
+      .filter(isRunId);
+    const records = await Promise.all(ids.map((id) => this.get(id).catch(() => null)));
+    return records
+      .filter((record): record is RunRecord => record !== null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .map((record) => ({
+        id: record.id,
+        status: record.status,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        outcome: record.outcome,
+        error: record.error,
+        retryOf: record.retryOf,
+        input: record.input.slice(0, 120),
+        decisions: record.steps.length,
+      }));
   }
 
   update(id: string, change: (record: RunRecord) => void): Promise<RunRecord> {
