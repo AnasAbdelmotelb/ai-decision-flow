@@ -1,17 +1,76 @@
+import { NonRetriableError } from "inngest";
+import { z } from "zod";
 import { inngest } from "@/inngest/client";
+import { createDecide, PermanentLlmError, type Decide } from "@/lib/decide";
+import { readServerEnv } from "@/lib/env";
+import { executeWorkflow, InvalidWorkflowError, type StepRunner } from "@/lib/execute";
+import { StoredGraph } from "@/lib/graph";
+import { createLlmClient } from "@/lib/llm";
+import { runStore } from "@/lib/runs";
 
-// Phase 1 smoke test: proves the app is registered with the Inngest dev server
-// and that a step runs. Replaced by the workflow runner in Phase 3.
-export const ping = inngest.createFunction(
-  { id: "ping", triggers: [{ event: "app/ping" }] },
-  async ({ event, step }) => {
-    const reply = await step.run("reply", () => ({
-      pong: true,
-      receivedAt: new Date().toISOString(),
-      message: typeof event.data?.message === "string" ? event.data.message : null,
-    }));
-    return reply;
+export const RUN_REQUESTED = "flow/run.requested";
+
+export const RunRequestedData = z.object({
+  runId: z.uuid(),
+  input: z.string().min(1).max(4000),
+  graph: StoredGraph,
+});
+
+// Errors that a retry cannot fix stop the run straight away instead of using up Inngest's retries.
+function withPermanentErrors(decide: Decide): Decide {
+  return async (question, input) => {
+    try {
+      return await decide(question, input);
+    } catch (error) {
+      if (error instanceof PermanentLlmError) throw new NonRetriableError(error.message, { cause: error });
+      throw error;
+    }
+  };
+}
+
+export const runWorkflow = inngest.createFunction(
+  {
+    id: "run-workflow",
+    name: "Run AI decision workflow",
+    triggers: [{ event: RUN_REQUESTED }],
+    // Each step is retried up to 2 more times (timeouts, server errors, answers other than YES/NO).
+    retries: 2,
+    onFailure: async ({ event, error }) => {
+      const parsed = RunRequestedData.safeParse(event.data.event.data);
+      if (!parsed.success) return;
+      await runStore.update(parsed.data.runId, (run) => {
+        run.status = "failed";
+        run.error = error.message;
+        run.currentNodeId = null;
+      });
+    },
+  },
+  async ({ event, step, attempt }) => {
+    const parsed = RunRequestedData.safeParse(event.data);
+    if (!parsed.success) throw new NonRetriableError("Invalid run request.");
+    const { runId, input, graph } = parsed.data;
+
+    // Inngest stores each step's result as JSON. The executor's step results are plain JSON values,
+    // so the round trip returns the same shape.
+    const runner: StepRunner = {
+      run: <T>(id: string, fn: () => Promise<T>) => step.run(id, fn) as unknown as Promise<T>,
+    };
+    const env = readServerEnv();
+    try {
+      return await executeWorkflow({
+        runId,
+        graph,
+        input,
+        step: runner,
+        attempt,
+        store: runStore,
+        decide: withPermanentErrors(createDecide(env, createLlmClient(env))),
+      });
+    } catch (error) {
+      if (error instanceof InvalidWorkflowError) throw new NonRetriableError(error.message, { cause: error });
+      throw error;
+    }
   },
 );
 
-export const functions = [ping];
+export const functions = [runWorkflow];

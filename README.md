@@ -6,8 +6,7 @@ frontend shows it with [React Flow](https://reactflow.dev/).
 
 FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 
-> **Status:** Phases 1–2 done (setup and the flow editor). Execution through Inngest comes in Phase 3,
-> polish in Phase 4.
+> **Status:** Phases 1–3 done (setup, flow editor, execution through Inngest). Polish comes in Phase 4.
 
 ## The flow editor
 
@@ -25,6 +24,30 @@ FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 - **Delete:** select a node or edge and press Backspace or Delete. Start cannot be deleted.
 - **Example:** "Reset to example" restores the brief's example: "Is this a support request?"
   YES → Support, NO → Sales.
+
+## Running a workflow
+
+Type the input every decision is asked about (or pick an example) and press **Run**.
+
+1. `POST /api/runs` checks the workflow (same rules as the editor), saves a run record and sends a
+   `flow/run.requested` event to Inngest.
+2. The Inngest function `run-workflow` walks the graph from Start. **Each Decision node is one Inngest
+   step** (`decide:<node id>`) that sends the node's prompt and the input to the model, which must reply
+   only `YES` or `NO`. The answer picks the YES or NO edge, and the run continues from that node until
+   it reaches an Outcome (`outcome:<node id>`).
+3. Every step writes its progress to the run record; the editor polls `GET /api/runs/<id>` and shows
+   the active node, the answers, the edges taken and the execution order.
+
+Answer handling: the reply is accepted only if it is `YES` or `NO` (case, whitespace, quotes, a full
+stop or markdown around it are tolerated; "Yes, because…" is not). If the first reply is invalid, the
+model is asked once more; if that is invalid too, the step fails.
+
+Failures and retries: each step is retried up to 2 more times by Inngest (timeouts, connection errors,
+server errors, invalid answers). Requests that a retry cannot fix (HTTP 400/401/403/404/422, such as an
+unknown model) stop the run straight away. When a run fails, the editor shows which step failed and why.
+
+Run records are JSON files in `.data/runs/` (gitignored). Set `LLM_STUB=1` to run without a model: the
+stub is not AI, it answers YES when the question and input share a keyword.
 
 ## Stack
 
@@ -46,14 +69,8 @@ npm run dev                  # app on http://localhost:3000
 npm run dev:inngest          # in a second terminal: Inngest dev server on http://localhost:8288
 ```
 
-The Inngest dev server connects to the app at `http://localhost:3000/api/inngest` and lists its
-functions. To check the setup, send a test event from the dev server UI, or:
-
-```bash
-curl -X POST http://localhost:8288/e/dev -H 'Content-Type: application/json' -d '{"name":"app/ping","data":{"message":"hello"}}'
-```
-
-The `ping` function then appears under **Runs** with one completed step.
+The Inngest dev server connects to the app at `http://localhost:3000/api/inngest`. Each workflow run
+appears under **Runs** in the dev server UI, with one step per node it passed through.
 
 ### Other commands
 
@@ -84,17 +101,22 @@ See `.env.example`. Never commit real keys; `.env.local` and other `.env*` files
 src/
 ├── app/
 │   ├── api/inngest/route.ts   # Inngest serve endpoint
+│   ├── api/runs/route.ts      # POST: start a run
+│   ├── api/runs/[id]/route.ts # GET: run status for the editor
 │   ├── layout.tsx
 │   └── page.tsx
 ├── components/
-│   ├── flow/                  # React Flow editor, custom nodes and YES/NO edge
+│   ├── flow/                  # React Flow editor, nodes, YES/NO edge, run panel and run state
 │   └── ui/                    # shadcn/ui components
 ├── inngest/
 │   ├── client.ts              # Inngest client
-│   └── functions.ts           # Inngest functions (Phase 1: ping)
+│   └── functions.ts           # run-workflow Inngest function
 └── lib/
+    ├── decide.ts              # YES/NO prompt, answer parsing, error handling, stub
     ├── env.ts                 # validated server settings
+    ├── execute.ts             # walks the graph, one durable step per node
     ├── graph.ts               # graph types, connection rules, ready check, storage format
-    └── llm.ts                 # OpenAI SDK client
+    ├── llm.ts                 # OpenAI SDK client
+    └── runs.ts                # run records (.data/runs/*.json)
 tests/                         # Vitest tests
 ```

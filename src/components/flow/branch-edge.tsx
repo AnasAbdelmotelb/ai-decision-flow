@@ -1,6 +1,7 @@
 "use client";
 
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from "@xyflow/react";
+import { useEdgeRun } from "@/components/flow/run-state";
 import { BRANCH_COLOURS, type FlowEdge } from "@/lib/graph";
 
 const styles = {
@@ -13,11 +14,19 @@ const styles = {
 export function BranchEdge(props: EdgeProps<FlowEdge>) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd, selected } = props;
   const style = styles[data?.branch ?? "next"];
+  const runState = useEdgeRun(id);
+  const width = runState === "taken" || runState === "latest" ? 4 : selected ? 3 : 2;
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
 
   return (
     <>
-      <BaseEdge id={id} path={path} markerEnd={markerEnd} style={{ stroke: style.stroke, strokeWidth: selected ? 3 : 2 }} />
+      <BaseEdge
+        id={id}
+        path={path}
+        markerEnd={markerEnd}
+        className={runState === "latest" ? "edge-flowing" : undefined}
+        style={{ stroke: style.stroke, strokeWidth: width, opacity: runState === "skipped" ? 0.3 : 1 }}
+      />
       {style.label && (
         <EdgeLabelRenderer>
           <div

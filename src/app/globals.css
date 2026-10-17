@@ -128,3 +128,20 @@
     @apply font-sans;
   }
 }
+/* The edge a running workflow just took: dashes flow towards the next node. */
+.react-flow__edge-path.edge-flowing {
+  stroke-dasharray: 8 6;
+  animation: edge-flow 0.6s linear infinite;
+}
+
+@keyframes edge-flow {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge-path.edge-flowing {
+    animation: none;
+  }
+}

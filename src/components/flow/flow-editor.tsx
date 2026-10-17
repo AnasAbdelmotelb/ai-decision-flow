@@ -21,6 +21,8 @@ import { Flag, GitBranch, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { edgeTypes } from "@/components/flow/branch-edge";
 import { nodeTypes } from "@/components/flow/nodes";
+import { RunPanel } from "@/components/flow/run-panel";
+import { RunContext, isActive, useRun } from "@/components/flow/run-state";
 import { Button } from "@/components/ui/button";
 import {
   STORAGE_KEY,
@@ -62,6 +64,9 @@ function Editor() {
   const [savedJson, setSavedJson] = useState<string | null>("");
   const { screenToFlowPosition, fitView } = useReactFlow<FlowNode, FlowEdge>();
   const wrapper = useRef<HTMLDivElement>(null);
+  const { run, error: runError, starting, stalled, start, clear } = useRun();
+  // While a run is in progress the workflow can't be changed (nodes can still be moved).
+  const locked = isActive(run) || starting;
 
   const graph = useMemo<Graph>(() => ({ nodes, edges }), [nodes, edges]);
   const issues = useMemo(() => findIssues(graph), [graph]);
@@ -161,6 +166,11 @@ function Editor() {
     [nodes, screenToFlowPosition],
   );
 
+  const runWorkflow = (input: string) => {
+    setNotice(null);
+    void start(toStored(graph), input);
+  };
+
   const addNode = (kind: "decision" | "outcome") => {
     const node =
       kind === "decision"
@@ -172,6 +182,7 @@ function Editor() {
 
   const resetToExample = () => {
     if (!window.confirm("Replace the current workflow with the example? This cannot be undone.")) return;
+    clear();
     const example = exampleGraph();
     setNodes(example.nodes);
     setEdges(example.edges);
@@ -180,71 +191,86 @@ function Editor() {
   };
 
   return (
-    <div ref={wrapper} className="h-full w-full">
-      <ReactFlow<FlowNode, FlowEdge>
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onConnectEnd={onConnectEnd}
-        onClickConnectStart={onClickConnectStart}
-        onClickConnectEnd={onClickConnectEnd}
-        isValidConnection={isValidConnection}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        deleteKeyCode={["Backspace", "Delete"]}
-      >
-        <Background gap={20} />
-        {/* On phones, pinch-zoom replaces these and the bottom panel needs the room. */}
-        <Controls className="max-md:!hidden" />
-        <MiniMap pannable zoomable className="max-md:!hidden" />
+    <RunContext.Provider value={run}>
+      <div className="flex h-full flex-col md:flex-row">
+        <div ref={wrapper} className="min-h-0 flex-1">
+          <ReactFlow<FlowNode, FlowEdge>
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            onClickConnectStart={onClickConnectStart}
+            onClickConnectEnd={onClickConnectEnd}
+            isValidConnection={isValidConnection}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            nodesConnectable={!locked}
+            deleteKeyCode={locked ? null : ["Backspace", "Delete"]}
+          >
+            <Background gap={20} />
+            {/* On phones, pinch-zoom replaces these and the bottom panel needs the room. */}
+            <Controls className="max-md:!hidden" />
+            <MiniMap pannable zoomable className="max-md:!hidden" />
 
-        <Panel position="top-left" className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => addNode("decision")}>
-            <GitBranch data-icon="inline-start" /> Add decision
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => addNode("outcome")}>
-            <Flag data-icon="inline-start" /> Add outcome
-          </Button>
-          <Button size="sm" variant="ghost" onClick={resetToExample}>
-            <RotateCcw data-icon="inline-start" /> Reset to example
-          </Button>
-        </Panel>
+            <Panel position="top-left" className="flex flex-wrap gap-2">
+              <Button size="sm" disabled={locked} onClick={() => addNode("decision")}>
+                <GitBranch data-icon="inline-start" /> Add decision
+              </Button>
+              <Button size="sm" variant="outline" disabled={locked} onClick={() => addNode("outcome")}>
+                <Flag data-icon="inline-start" /> Add outcome
+              </Button>
+              <Button size="sm" variant="ghost" disabled={locked} onClick={resetToExample}>
+                <RotateCcw data-icon="inline-start" /> Reset to example
+              </Button>
+            </Panel>
 
-        <Panel position="bottom-center" className="w-[min(32rem,calc(100vw-2rem))]">
-          <div className="rounded-lg border bg-background/95 p-3 text-sm shadow-sm">
-            {/* Not announced: it changes on every drag. */}
-            <p className="mb-1 text-xs text-muted-foreground">
-              {savedJson === null
-                ? "Can't save: browser storage is unavailable"
-                : savedJson === graphJson
-                  ? "Saved in this browser"
-                  : "Saving…"}
-            </p>
-            <div aria-live="polite">
-              {notice && <p className="mb-1 font-medium">{notice}</p>}
-              {issues.length === 0 ? (
-                <p className="text-emerald-700">Ready: every decision has a prompt and both YES and NO paths.</p>
-              ) : (
-                <>
-                  <p className="font-medium text-amber-700">
-                    {issues.length} {issues.length === 1 ? "issue" : "issues"} to fix before running:
-                  </p>
-                  <ul className="mt-1 max-h-24 list-disc overflow-y-auto pl-5 text-muted-foreground">
-                    {issues.map((issue, index) => (
-                      <li key={`${issue.nodeId}-${index}`}>{issue.message}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          </div>
-        </Panel>
-      </ReactFlow>
-    </div>
+            <Panel position="bottom-center" className="w-[min(32rem,calc(100vw-2rem))]">
+              <div className="rounded-lg border bg-background/95 p-3 text-sm shadow-sm">
+                {/* Not announced: it changes on every drag. */}
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {savedJson === null
+                    ? "Can't save: browser storage is unavailable"
+                    : savedJson === graphJson
+                      ? "Saved in this browser"
+                      : "Saving…"}
+                </p>
+                <div aria-live="polite">
+                  {notice && <p className="mb-1 font-medium">{notice}</p>}
+                  {issues.length === 0 ? (
+                    <p className="text-emerald-700">Ready: every decision has a prompt and both YES and NO paths.</p>
+                  ) : (
+                    <>
+                      <p className="font-medium text-amber-700">
+                        {issues.length} {issues.length === 1 ? "issue" : "issues"} to fix before running:
+                      </p>
+                      <ul className="mt-1 max-h-24 list-disc overflow-y-auto pl-5 text-muted-foreground">
+                        {issues.map((issue, index) => (
+                          <li key={`${issue.nodeId}-${index}`}>{issue.message}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Panel>
+          </ReactFlow>
+        </div>
+        <RunPanel
+          run={run}
+          error={runError}
+          starting={starting}
+          stalled={stalled}
+          canRun={issues.length === 0}
+          locked={locked}
+          onRun={runWorkflow}
+          onClear={clear}
+        />
+      </div>
+    </RunContext.Provider>
   );
 }
 
