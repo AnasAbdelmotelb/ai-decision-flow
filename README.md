@@ -6,7 +6,25 @@ frontend shows it with [React Flow](https://reactflow.dev/).
 
 FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 
-> **Status:** Phase 1 (setup). The flow editor, execution and polish come in Phases 2–4.
+> **Status:** Phases 1–2 done (setup and the flow editor). Execution through Inngest comes in Phase 3,
+> polish in Phase 4.
+
+## The flow editor
+
+- **Nodes:** one **Start** node (the entry point), **Decision** nodes (a YES/NO question for the model)
+  and **Outcome** nodes (where a run ends). Add them from the toolbar; rename them and edit prompts
+  directly on the node.
+- **Edges:** each Decision has a green **YES** output and a red **NO** output; Start has one output.
+  Drag from an output dot to an input dot, or click one dot and then the other.
+- **Rules:** each output holds one edge (connecting it again re-points it), nothing can lead back into
+  Start, and connections that would create a loop are refused with a message.
+- **Ready check:** the panel at the bottom lists what must be fixed before a run, such as a Decision
+  without a YES or NO path, or an empty prompt.
+- **Saved locally:** the workflow is saved in this browser's `localStorage` after every change and
+  restored on reload. Saved data is validated when loaded; anything invalid falls back to the example.
+- **Delete:** select a node or edge and press Backspace or Delete. Start cannot be deleted.
+- **Example:** "Reset to example" restores the brief's example: "Is this a support request?"
+  YES → Support, NO → Sales.
 
 ## Stack
 
@@ -68,12 +86,15 @@ src/
 │   ├── api/inngest/route.ts   # Inngest serve endpoint
 │   ├── layout.tsx
 │   └── page.tsx
-├── components/ui/             # shadcn/ui components
+├── components/
+│   ├── flow/                  # React Flow editor, custom nodes and YES/NO edge
+│   └── ui/                    # shadcn/ui components
 ├── inngest/
 │   ├── client.ts              # Inngest client
 │   └── functions.ts           # Inngest functions (Phase 1: ping)
 └── lib/
     ├── env.ts                 # validated server settings
+    ├── graph.ts               # graph types, connection rules, ready check, storage format
     └── llm.ts                 # OpenAI SDK client
 tests/                         # Vitest tests
 ```
