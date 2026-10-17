@@ -8,6 +8,45 @@ FlyRank AI Internship, Backend AI Engineering track, Week 7 (BE-09).
 
 > **Status:** all four phases done: setup, flow editor, execution through Inngest, and polish.
 
+## Screenshots
+
+Real captures of the app running locally (Next.js dev server, Inngest dev server, Ollama `llama3.2:3b`)
+on 17 October 2026. For these captures the model calls went through a small test proxy that added a
+2.5 s delay, so the running state is visible, and step times include that delay (the first call also
+includes loading the model). The failure in screenshot 4 was a simulated outage: the proxy returned
+HTTP 503 for the "Bug report?" question; the app itself has no test-only code.
+
+**1. Editor:** a three-decision triage workflow with YES (green) and NO (red) paths.
+
+![Flow editor with a three-decision workflow](docs/screenshots/01-editor.png)
+
+**2. Running:** the active decision is asking the model; the edge just taken animates.
+
+![A run in progress](docs/screenshots/02-running.png)
+
+**3. Completed:** "Do you offer a discount…" → Support request? **NO** → Pricing question? **YES** → Sales,
+with the execution log.
+
+![A completed run ending at Sales](docs/screenshots/03-completed.png)
+
+**4. Failed:** the second decision failed on all 3 attempts (HTTP 503); the node and the log show why.
+
+![A failed run](docs/screenshots/04-failed.png)
+
+**5. Retried from the failed step:** the first answer was reused without a model call; only
+"Bug report?" was asked again → Engineering.
+
+![A retry that reuses the first answer](docs/screenshots/05-retried.png)
+
+**6. History:** past runs, newest first, including which run a retry came from.
+
+![Run history](docs/screenshots/06-history.png)
+
+**7. Inngest dev server:** the trace of run 3, one step per node: `start`, `decide:decision-support`,
+`decide:decision-pricing`, `outcome:outcome-sales`.
+
+![Inngest trace with one step per node](docs/screenshots/07-inngest-trace.png)
+
 ## The flow editor
 
 - **Nodes:** one **Start** node (the entry point), **Decision** nodes (a YES/NO question for the model)
